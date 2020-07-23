@@ -1,0 +1,706 @@
+---
+title: "Credit Card Fraud Detection"
+author: "Rishabh Singh Dodeja"
+date: "July 22, 2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+It is important that credit card companies are able to recognize fraudulent credit card transactions so that customers are not charged for items that they did not purchase.
+
+According to creditcards.com, there was over £300m in fraudulent credit card transactions in the UK in the first half of 2016, with banks preventing over £470m of fraud in the same period. The data shows that credit card fraud is rising, so there is an urgent need to continue to develop new, and improve current, fraud detection methods.
+
+Using this dataset, we will use machine learning to develop a model that attempts to predict whether or not a transaction is fraudlent. To preserve anonymity, these data have been transformed using principal components analysis.
+
+To begin this analysis, we will first train a random forest model to establish a benchmark, we will also analyze and identify impotatn variables in predicting model. Then we will move one to developint a XG-Boost Classifier a more complex and robust approach.
+
+## Dataset
+The datasets contains transactions made by credit cards in September 2013 by european cardholders.
+This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions. The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions.
+
+It contains only numerical input variables which are the result of a PCA transformation. Unfortunately, due to confidentiality issues, we cannot provide the original features and more background information about the data. Features V1, V2, … V28 are the principal components obtained with PCA, the only features which have not been transformed with PCA are 'Time' and 'Amount'. Feature 'Time' contains the seconds elapsed between each transaction and the first transaction in the dataset. The feature 'Amount' is the transaction Amount, this feature can be used for example-dependant cost-senstive learning. Feature 'Class' is the response variable and it takes value 1 in case of fraud and 0 otherwise.
+
+## Process and Workflow
+The main steps in this project include:
+1.	Data Ingestion: download, parse, import and prepare data for further processing and analysis
+2.	Data Exploration: explore data to understand, analyze and visualize different features and their                     relationships with movie ratings
+3.	Data Cleaning: deal with or eventually remove data with missing or incorrect values from dataset
+4.	Modelling and Analysis: create models with two different approach and compare their perfomance based of evaluation metric as well as computation time. Analayze and identify important features in predicting the classes
+5.	Communicate: create report and publish results
+
+# Data Ingestion
+
+## Loading Data & Packages 
+This section will automatically download required packages and dataset. The dataset can be found at Kaggle:
+The .csv file data is read as creditcard dataframe and this data is further used for data exploration and visualization 
+
+```{r}
+################################
+# Create creditcard dataset
+################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+
+#Credit Card Fraud Data
+  # Kaggle: https://www.kaggle.com/mlg-ulb/creditcardfraud/
+
+dl <- tempfile()
+download.file("https://www.kaggle.com/mlg-ulb/creditcardfraud/download", dl)
+
+#creditcard <- fread(text = gsub("::", "\t", readLines(unzip(dl, "creditcard.csv"))))
+#creditcard <- fread(text = gsub("::", "\t", readLines("creditcard.csv")))
+```
+
+```{r}
+# check the data and structure
+head(creditcard)
+```
+## Data Exploration and Visualization
+In this section we will explore the data and try to visualize as many aspects as possible, to get insights on relationships between differnet features and Classes. These insight are essential to develop a efficient prediction model
+
+### Classes
+
+Here we try to visualize how is the distribution between the two classes, i.e., Fraud v/s Genuine defined by 1 and 0 numeircs respective
+```{r}
+# summary table calculating counts for each class
+ClassSummary = creditcard %>% group_by(Class) %>% summarise(Count=n()) %>% mutate(Class=as.character((Class)))
+
+# Bar Plot
+ClassSummary %>% ggplot(aes(x = Class, y=Count)) + geom_col() + ggtitle("Class Distribution") + labs(x="0-Genuine                1-Fraud")
+
+```
+Clearly, the dataset is extremely unbalanced. Even a “null” classifier which always predicts class=0 would obtain over 99% accuracy on this task. This demonstrates that a simple measure of mean accuracy should not be used due to insensitivity to false negatives.
+
+To overcome this imbalance we can use some transformation techniques to make our dataset better for training. Some commonly used techniques for this kind of problems are listed below:
+  1. Oversampling
+  2. Undersampling
+  3. SMOTE (Synthetic Minority Over-sampling Technique)
+In this project we use SMOTE discussed in later sections 
+
+
+The most appropriate measures to use on this task would be:
+
+  1. Precision
+  2. Recall
+  3. F-1 score (harmonic mean of precision and recall)
+  4. AUC (area under precision-recall curve)
+  
+
+###Features
+
+Here we try to find and visualize relationship between different features and classes.
+Below is summary of all features/columns statistics. We see that all the features V1 to V28 are normalized about zero. This s a great thing and helps building a better trained model. Thus we will also apply this normalization to "Amount" in a later section ahead.
+
+This normalization is important to see how informative a feature actually is while predicting results/classes.
+
+```{r}
+summary(creditcard)
+```
+
+***Amount v/s Classes***
+
+To check relation ship betwwen amount and classes we will plot out a box blot
+
+```{r}
+# Boxplot for Amount vs. Classes Distribution
+ggplot(creditcard, aes(x = as.character(Class), y = Amount)) + geom_boxplot() + ggtitle("Amount v/s Class") + labs(x="Class")
+```
+
+There's very large variability in genuine transaction amounts than the fradulent ones.
+
+```{r}
+#Get Mean and  Median of the Amount-Class distribution
+creditcard %>% group_by(Class) %>% summarise(mean(Amount), median(Amount))
+```
+Fradulent transactions seem to higher mean than Genuine ones, while on the other hand Fradulent have lower mean than the genuine, this suggests that the amount distribution for genuine transaction is right skewed.
+However this suggest that amount can be a significant predictor and it will be useful to keep it in our model.
+
+Now, as we discussed let's normalize the amount column as well
+```{r}
+# function to normalize columns/arrays
+normalize <- function(x){
+      return((x - mean(x, na.rm = TRUE))/sd(x, na.rm = TRUE))
+}
+creditcard$Amount <- normalize(creditcard$Amount)
+```
+
+### Correlation
+
+Now that all our features/columns are normalized lets plotcorrelation chart to visualize correlation betwwen different all the variable and factor
+
+```{r}
+# correlation plot
+corr_plot <- corrplot(cor(creditcard[,-c("Time")]), method = "circle", type = "upper")
+```
+## Data Preparation
+
+In this section we will clean our datset, transform our dataset to overcome bias and prepare test/train datasets
+
+### Data Cleaning
+
+Here we will check for missing or inappropriate values in the dataset and will discuss how to deal with them.
+
+```{r}
+apply(creditcard, 2, function(x) sum(is.na(x)))
+```
+Great News! There are no missing or NA values. No Data cleaning is required for our dataset.
+
+### Data Transformation
+
+To avoid developing a naive model, we should make sure the classes are roughly balanced. Therefore, we will be using transformation techniques, particularly SMOTE to overcome this issue in our dataset.
+
+***SMOTE***
+SMOTE is a very famous and reliable ovesampling technique. It works roughly as follows:
+  1. The algorithm selects 2 or more similar instances of data
+  2. It then perturbs each instance one feature at a time by a random amount. This amount is within the distance to the neighbouring examples.
+
+SMOTE has been shown to perform better classification performance in the ROC space than either over- or undersampling (From Nitesh V. Chawla, Kevin W. Bowyer, Lawrence O. Hall and W. Philip Kegelmeyer’s “SMOTE: Synthetic Minority Over-sampling Technique” (Journal of Artificial Intelligence Research, 2002, Vol. 16, pp. 321–357)). Since ROC is the measure we are going to optimize for, we will use SMOTE to resample the data.
+
+### Data Sampling
+Finally we break out dataset in train and test sets. A good practice in general case scenario can be 90%-10% or 80%-20% split for train and test respectively. 
+
+***Special Bias Case*** 
+As in our case the dataset is extremely biased, there are very low fraud cases and a 10% split will make them negilible and we will end up eveloping a biase predictor. Thus here a 50%-50% split is recommended.
+
+But, if we are using oversampling techniques like SMOTE usual 80%-20% split should work just fine.
+In this project we will be using SMOTE with 80%-20% split.
+
+***K-Fold Cross Validation***
+Further, we will be using K-Fold Cross validation to avoid overfitting, we will go with usual K=10 in our first attempt.
+```{r}
+set.seed(56)
+
+#Create Data Partition
+train_index = createDataPartition(creditcard$Class, times = 1, p = 0.8, list = F)
+
+#Distributing data to test and train sets
+train = creditcard[train_index]
+test = creditcard[!train_index]
+train$Class <- as.factor(train$Class)
+test$Class <- as.factor(test$Class)
+levels(train$Class)=make.names(c("Genuine","Fraud"))
+levels(test$Class)=make.names(c("Genuine","Fraud"))
+
+# Uncomment registerDoMC to activate parallel processing
+# Parallel processing for faster training
+#registerDoMC(cores = 4)
+
+# Use 10-fold cross-validation
+ctrl <- trainControl(method = "cv",
+                     number = 10,
+                     verboseIter = T,
+                     classProbs = T,
+                     sampling = "smote",
+                     summaryFunction = twoClassSummary,
+                     savePredictions = T)
+```
+# Methods and Analysis
+
+## Evluation Scheme
+
+### Confusion Matrix
+Sometimes, like in our case Accuracy won't tell the whole story, due to our class imbalance ratio, our model would be 99% accurate even if never deects a fraud. Thus we need to understand "True Positive", "True Negative", as well as "False Positive" and "False Negative".
+A Confusion Matrix is given as:
+
+### F1 Score
+We will calculate F1-score to compare and analyse permformance of a model with different parameters. The formula for F1 is given as:
+$$\frac {Precision.Recall}{Precision + Recall}$$
+i.e.
+$$\frac {2TP}{2TP + FP + FN}$$
+where, TP is True Positive, FP is False Positive, and FN is False negative
+
+### AUC
+To compare between different Models and given the class imbalance ratio, we recommend measuring the accuracy using the Area Under the Precision-Recall Curve (AUPRC or AUC). Confusion matrix accuracy is not meaningful for unbalanced classification. AUC will be used to analayse performance of different Models and approach used in ths project
+
+All these metric functions are available in library MLmetrics
+```{r}
+#installing MLMatrix Pckage for F1_Score
+if(!require(Mlmetrics)) install.packages("MLmetrics", repos = "http://cran.us.r-project.org")
+library(MLmetrics)
+
+#installing e1071 package for confusion matrix and AUC
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+library(e1071)
+
+#installing pROC package for ROC and AUC calculations
+if(!require(pROC)) install.packages("pROC", repos = "http://cran.us.r-project.org")
+library(pROC)
+```
+
+## Random Forest Model
+As a first approach to this project we will built a Random Forest Classifier to set a benchmark and the will try tweaking its parameters and input Variables to enhance its performance. 
+
+The code below uses SMOTE to resample the data, performs 10-fold CV and trains a Random Forest classifier using ROC as metric to maximize
+```{r}
+#install caret, Classification Regresiion and training package
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+library(caret)
+
+#train RendomForst Model
+RF_Model <- train(Class ~ ., data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+```
+
+Let's see the results, how well our model fits on training data
+```{r}
+RF_Model
+```
+
+Note: SMOTE resampling was done only on the training data. The reason for that is if we performed it on the whole dataset and then made the split, SMOTE would bleed some information into the testing set, thereby biasing the results in an optimistic way.
+
+***Correlation Matrix***
+Now, Let's see our model performance on test dataset!
+```{r}
+#get prediction for test
+preds = predict(RF_Model, test, type = "prob")
+
+# threshold is initially selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+y_test = test$Class
+
+#Calcuate Confusion Matrix
+conf_mat_RF <- confusionMatrix(pred,y_test)
+conf_mat_RF
+```
+So we have got accuracy of 0.9966 with specificty 0.86 which is pretty good for the first model. 
+```{r}
+fourfoldplot(conf_mat_RF$table)
+```
+***AUC***
+Now it's time to calculate AUC for our model. AUC is basically the area under the curve for Sensitivty v/s Specificity at different Threshold values. It is very useful metric to campare between diffeent classifiers.
+
+AUC = 1 is ideal while 0.5 is worse
+```{r}
+roc_data <- roc(y_test, predict(RF_Model, test, type = "prob")$Fraud)
+plot(roc_data, main = paste0("AUC: ", round(pROC::auc(roc_data), 5)))
+
+```
+We got an AUC of 0.981 which is pretty good at this level.
+
+Let's creat a evualation table with the final evaulation for our first Random Forest Model
+```{r}
+#Specificty
+Sp_RF = as.numeric(conf_mat_RF$byClass["Specificity"])
+
+#RF F1_Score
+F1_RF = round(F1_Score(y_test,pred),5)
+
+#AUC
+roc_data = roc(y_test, predict(RF_Model, test, type = "prob")$Fraud)
+AUC_RF = round(pROC::auc(roc_data), 5)
+
+# Create Results Table
+result = tibble(Method = "Random Forest", Specificty = Sp_RF , F1Score = F1_RF, AUC = AUC_RF)
+result
+```
+
+### Threshold Tuning
+We see there there are only 14 cases that were actually fraudulent and missed out by our classifier. But one the same hand there are 177 genuine cases that were detect as Fraud but were genuine.
+
+We can further change the threshold from 0.5 to False positives ,i.e, fraud transactions detected as Genuine. bUt this comes at a cost of more genuine transactions being identified as Fraud. So again, this a judgmental call to be made with concern of stake holders according to what are the exact needs and purpose.
+
+Let's try and simulate our model with different thresholds varying from 0.4 to 0.9 and calculate F1 Score for each
+```{r}
+#define function to predict classes for variable threshold values
+get_FPFN<- function(thresh,preds,y_test){
+
+pred = as.factor(preds$Fraud>thresh)
+levels(pred)=make.names(c("Genuine","Fraud"))
+y_test = test$Class
+
+#Calcuate Confusion Matrix
+conf_mat_RF <- confusionMatrix(pred,y_test)
+FP = conf_mat_RF$table[1,2]
+FN =conf_mat_RF$table[2,1]
+F1 = F1_Score(y_test, pred)
+FPN = c(FP,FN,F1)
+return (FPN)
+}
+
+# data frame to FPs and FNs for different values of threshold
+FP_FN = data.frame(Thresh=character(), Count=character(), Category=character(), F1_Score =numeric())
+
+# run simulation for different threshold values b/w 0.1 and 0.9
+for(i in seq(0.4,0.9,0.05)){
+  FPN = get_FPFN(i,preds,y_test)
+  FP = as.numeric(FPN[1])
+  FN = as.numeric(FPN[2])
+  F1 = as.numeric(FPN[3])
+  rowFP = data.frame(Thresh=i,Count= FP,Category= "FP", F1_Score = F1)
+  rowFN = data.frame(Thresh=i,Count= FN,Category= "FN", F1_Score = F1)
+  FP_FN = FP_FN %>% rbind(rowFP)
+  FP_FN = FP_FN %>% rbind(rowFN)
+}
+# mutate threshhold as character for bar plots
+FP_FN = FP_FN %>% mutate(Thresh=as.character(Thresh))
+
+```
+
+***FP & FN***
+Let's Plot and analyze Results of our simulation
+```{r}
+FP_FN %>% ggplot(aes(x=Thresh,y=Count,group=Category, fill=Category)) + geom_col(stat="identity", position="dodge")+ ggtitle("False Positvies & False Negatives") 
+```
+
+***F1 Score***
+Let's plot the F-1 Score. F-1 Score is not really a good metric in this case as it evaluates the model while accounting for bth FPs and FNs.
+
+F1 Score will be maximum when both are equal, in that case the numbers FPs becomes though equal to FN are to high. we can't let so many frauds to slip through our system for sake of decreasing FNs
+```{r}
+F1Scores = FP_FN %>% group_by(Thresh) %>% summarise(F1_Score=mean(F1_Score)) %>% mutate(Thresh=as.numeric(Thresh))
+F1Scores %>% ggplot(aes(x=Thresh,y=F1_Score)) + geom_line(size=1.5) + ylim(0.99,1)
+```
+
+So we see, as wetighten the threshold the False detection of Fraud decrease exponentialy but the actual fraud cases slipping through our system increase. 
+
+Look, at 0.4 there are only 4 Fraud cases that slipped through our model! But the False negatives jumped to 465!
+Which is a lot and a bank would never want to charge their genuine customers for fraud.
+
+So, considering voth FP-NP distribution and the F1 Scores, our first choice 0.5 seems to be quite optimal and we will proceed with it.
+
+### Feature Engineering 
+
+Now that we have a achieved a benchmark very quickly, we should notice that there are 30 variables in total used by our model, but we saw in correlation plot that only very few variables have significant correaltion with the classification. 
+Let's see if we can make our model simpler without losing accuracy, also we might end up increasing it.
+
+Let's plot the the most imortant variables/Features and their significance
+```{r}
+ggplot(varImp(RF_Model))
+```
+Now Let's see how our results vary if we us different RF models with different no. of variables, starting with single most important variable model.
+
+Note: We will keep common 0.5 threshold for all models 
+
+We will use F1 score as the parameter to compare between different variable RF models.
+
+***1 Variable Model***
+```{r}
+F1Scores = data.frame(Variables = numeric(), F1= numeric())
+
+#train 1-variable model
+RF_Model = train(Class ~ V14, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+F1Scores = F1Scores %>% rbind(data.frame(Variables =1, F1 = F1_Score(y_test,pred)))
+```
+***2 Variable Model***
+```{r}
+#train 2-variable model
+RF_Model = train(Class ~ V14+V10, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =2, F1 = F1_Score(y_test,pred)))
+```
+***3 Variable Model***
+```{r}
+#train 3-variable model
+RF_Model = train(Class ~ V14+V10+V17, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =3, F1 = F1_Score(y_test,pred)))
+```
+***4 Variable Model***
+```{r}
+#train 4-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =4, F1 = F1_Score(y_test,pred)))
+```
+***6 Variable Model***
+```{r}
+#train 6-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =6, F1 = F1_Score(y_test,pred))) 
+```
+***8 Variable Model***
+```{r}
+#train 8-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16+V11+V3, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =8, F1 = F1_Score(y_test,pred)))
+```
+***10 Variable Model***
+```{r}
+#train 10-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16+V11+V3+V7+V2, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =10, F1 = F1_Score(y_test,pred))) 
+```
+***13 Variable Model***
+```{r}
+#train 13-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16+V11+V3+V7+V2+V9+V18+V6, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =13, F1 = F1_Score(y_test,pred)))
+```
+***18 Variable Model***
+```{r}
+#train 18-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16+V11+V3+V7+V2+V9+V18+V6+V21+V27+V1+V5+V19, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =18, F1 = F1_Score(y_test,pred)))
+```
+***All Variable Model***
+
+```{r}
+#train all-variable model
+RF_Model = train(Class ~ ., data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+
+#add F1_Score
+F1Scores = F1Scores %>% rbind(data.frame(Variables =30, F1 = F1_Score(y_test,pred))) 
+```
+
+Now that we have calculated F1 scores for different variables models, let's see what we have got.
+```{r}
+F1Scores
+```
+
+It's better to plot and visualize how F1-Score varies with including more of less important variables in our model.
+```{r}
+F1Scores %>% ggplot(aes(x=Variables,y=F1)) + geom_line(size=1.5,colour="blue") + geom_point(size =2.5)
+```
+And there it is! Using Just Top 10 most important variables gives us best F1-Score. Now we can build our final Random forest model on this.
+
+## Optimized Random Forest Model
+Now, we can build our final Random Forest Model with top 10 most inmportant variables 
+Variables = V14+V10+V17+V4+V12+V16+V11+V3+V7+V2
+Threshhold = 0.5
+```{r}
+#train 10-variable model
+RF_Model = train(Class ~ V14+V10+V17+V4+V12+V16+V11+V3+V7+V2, data = train, method = "rf", trControl = ctrl, verbose = T, metric = "ROC")
+
+#predict test dataset
+preds <- predict(RF_Model, test, type = "prob")
+
+# threshold is selected as 0.5
+pred = as.factor(preds$Fraud>0.5)
+levels(pred)=make.names(c("Genuine","Fraud"))
+```
+***Confusion Matrix***
+
+```{r}
+#Confusion Matrix 
+conf_mat_RF <- confusionMatrix(pred,y_test)
+
+#Confusion Matrix Plot
+fourfoldplot(conf_mat_RF$table)
+```
+Here we see 13 False Positives, this is just one less than our original RF model, but this is just shows that fairly less complex models can achive better results sometimes
+
+***AUC***
+```{r}
+#plot ROC
+roc_data = roc(y_test, predict(RF_Model, test, type = "prob")$Fraud)
+plot(roc_data, main = paste0("AUC: ", round(pROC::auc(roc_data), 5)))
+```
+
+
+Add to final Evaluation Table
+```{r}
+#Specificty
+Sp_RF = as.numeric(conf_mat_RF$byClass["Specificity"])
+
+#RF F1_Score
+F1_RF = round(F1_Score(y_test,pred),5)
+
+#AUC
+roc_data = roc(y_test, predict(RF_Model, test, type = "prob")$Fraud)
+AUC_RF = round(pROC::auc(roc_data), 5)
+
+# Create Results Table
+result = bind_rows(result, tibble(Method = "Random Forest (Optimized)", Specificty = Sp_RF , F1Score = F1_RF, AUC = AUC_RF))
+result
+```
+
+
+## XG-Boost Classifier
+
+Lastly, we will implement XGBoost, which is based on Gradient Boosted Trees and is a more powerful model compared to both Random Forest
+
+Installing and loading Xgboost Package
+```{r}
+if(!require(xgboost)) install.packages("xgboost", repos = "http://cran.us.r-project.org")
+library(xgboost)
+```
+
+First we need to create matrix dataframes accepted by XG-Boost classifier.
+```{r}
+
+#recreating test/train dataset for xgb based on previos train_index value 
+#as we tranformed Class coloum to factor in previous, it creats problem with XGB
+train = creditcard[train_index]
+test = creditcard[!train_index]
+
+#create Data Matrix form for XGB
+dtrain <- xgb.DMatrix(data = as.matrix(train[,-c("Class")]), label = train$Class)
+dtest <- xgb.DMatrix(data = as.matrix(test[,-c("Class")]), label = test$Class)
+```
+
+Now that we are done let's put on training. I'm using most usual hyperparameters settings for XG-Boost. Although you are encouraged to change some numbers and see wher it takes you.
+```{r}
+xgb <- xgboost(data = dtrain, nrounds = 100, gamma = 0.1, max_depth = 10, objective = "binary:logistic", nthread = 7)
+```
+
+Let's run our model on test dataset and check out the results
+
+```{r}
+#Run Predictions
+preds_xgb <- predict(xgb, dtest)
+
+#Convert Prediction to Factors for Confusion Matrix
+pred_fac = as.factor(preds_xgb>0.5)
+levels(pred_fac)= make.names(c("Genuine","Fraud"))
+y_test = as.factor(test$Class)
+levels(y_test)=make.names(c("Genuine","Fraud"))
+```
+
+***Confusion Matix***
+The results of XGBoos can be visulaized in confusion matrix to know about how well our model performs with False positives and False negatives
+```{r}
+conf_mat_XGB = confusionMatrix(pred_fac, y_test)
+conf_mat_XGB
+```
+```{r}
+#Confusion Matrix Plot
+fourfoldplot(conf_mat_XGB$table)
+```
+ There are only 4 False Negatives!! while the no. of Flase positives has just increased by 3!
+ 
+ ***AUC***
+To compare the perfomance with other Random Forest Models AUC can be a good metric and is recommended. As we saw in previous case where F1-Score can be misguiding with biased datasets
+
+```{r}
+#plot ROC
+roc_data <- roc(y_test, preds_xgb)
+plot(roc_data, main = paste0("AUC: ", round(pROC::auc(roc_data), 5)))
+```
+We have AUC of 0.986!! Clearly XGB achieved considerably higher AUC compared to Random Forest Models
+
+#Results
+
+Let's first make the final evaluation table
+```{r}
+Sp_XGB = as.numeric(conf_mat_XGB$byClass["Specificity"])
+
+#RF F1_Score
+F1_XGB = round(F1_Score(y_test,pred_fac),5)
+
+#AUC
+roc_data = roc(y_test, preds_xgb)
+AUC_XGB = round(pROC::auc(roc_data), 5)
+
+# Create Results Table
+result = bind_rows(result, tibble(Method = "XG-Boost", Specificty = Sp_XGB , F1Score = F1_XGB, AUC = AUC_XGB))
+result
+
+```
+Clearly, XG-Boost outperforms both Random Forest anf Optimized Random Forest Classifier models. Though a we loose on the specificty of the model, but that is considerably low compared to reduction in false negatives.
+
+In Random Forest models we could best achieve 14 False positives with 177 false negatives, but XGboost drops False negative to 4! i.e., 173 units compared to increase in False positives to 20, i.e, only 7 units.
+ 
+Though both the models have their own limitations and can be made more better, we can declare XG-boost as the winner under the scope of this project.
+ 
+
+#Conclusion
+
+Through out the project we focused on building a classification model to dete credit card frauds. We explored, analyzed and visualized data to understand relationships between variables/features and used the insights to develop a suitable classification model. We set a benchmark with Random Forest Classifier plugging in complete dataset with all variables to use. Then we performed threshold tuning and feature engineering to get a optimal threshold value, and also filtered out less inmportant variables which helpen making the model simple yet enhancing the performance.
+
+We saw how using less features and simple model can be better that using directly everything and end building a complex model that is computationaly expensive and neither has signifiacantly better performance.
+
+Lastely, we used XG-Boost classifier, gardient boosted trees that outperfomed both the models.
+
+##Limitations
+
+All models have their own limitations, we saw that even after optimizing and usind advaced classifiers like XG-Boost, there is still a trade off between False Positives and False negatives and thus at the end it is the users Judgement Model on what is he/she more interested in and what the business goals are.
+
+##Future Work
+
+To build a more robust model which could solve the False positives and negatives, a Deep Learning approach can outperform many other models. Especially in our case that includes too many normalized variables, Deep Learning nueral nerworks perform extremely well.
+
+Other than deep learning we should also try to to explore capalities of  XG-Boost more. We achived considerably well results in our first attempt. We can try tweaking different paramenter and see how it effects our results.
+
+You can find my other work on my github repository here: https://github.com/rishabhdodeja/
